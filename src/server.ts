@@ -1,151 +1,100 @@
-import * as libsignal from '@privacyresearch/libsignal-protocol-typescript';
+import express, { Request, Response, NextFunction } from 'express';
+import { SignalService } from './signal-service';
+import { SignalProtocolStore } from './signal-store'
+import bodyParser from 'body-parser';
 
-// Classe para armazenamento implementando a interface StorageType
-class SignalStorage implements libsignal.StorageType {
-  store: Map<string, any>;
+const app = express();
+const port = 3000;
 
-  constructor() {
-    this.store = new Map();
-  }
+app.use(bodyParser.json());
 
-  async getIdentityKeyPair() {
-    return this.store.get('identityKey');
-  }
+// Armazenamento em memória
+const users: Record<string, SignalService> = {};
 
-  async getLocalRegistrationId() {
-    return this.store.get('registrationId');
-  }
-
-  async isTrustedIdentity(identityKey: string, _identifier: any) {
-    const storedIdentity = this.store.get(`identityKey:${identityKey}`);
-    return storedIdentity === undefined || storedIdentity === identityKey;
-  }
-
-  async saveIdentity(identityKey: string, _identifier: any): Promise<boolean> {
-    this.store.set(`identityKey:${identityKey}`, identityKey);
-    return true;
-  }
-
-  async loadPreKey(keyId: string | number) {
-    return this.store.get(`preKey:${keyId}`);
-  }
-
-  async storePreKey(keyId: string | number, keyPair: any): Promise<void> {
-    this.store.set(`preKey:${keyId}`, keyPair);
-  }
-
-  async removePreKey(keyId: string | number): Promise<void> {
-    this.store.delete(`preKey:${keyId}`);
-  }
-
-  async loadSignedPreKey(keyId: string | number) {
-    return this.store.get(`signedPreKey:${keyId}`);
-  }
-
-  async storeSignedPreKey(keyId: string | number, keyPair: any): Promise<void> {
-    this.store.set(`signedPreKey:${keyId}`, keyPair);
-  }
-
-  async removeSignedPreKey(keyId: string | number): Promise<void> {
-    this.store.delete(`signedPreKey:${keyId}`);
-  }
-
-  async loadSession(encodedAddress: string): Promise<any> {
-    return this.store.get(`session:${encodedAddress}`);
-  }
-
-  async storeSession(address: libsignal.SignalProtocolAddress, record: any): Promise<void> {
-    this.store.set(`session:${address.toString()}`, record);
-  }
-
-  async loadSenderKey(_senderKeyId: any, _deviceId: any) {
-    return null;
-  }
-
-  async storeSenderKey(_senderKeyId: any, _deviceId: any, _record: any): Promise<void> {
-    // Implementação futura, caso necessário
-  }
-}
-
-// Gerar identidades para usuários
-async function generateIdentity(storage: SignalStorage) {
-  const identityKeyPair = await libsignal.KeyHelper.generateIdentityKeyPair();
-  const registrationId = await libsignal.KeyHelper.generateRegistrationId();
-
-  await storage.saveIdentity(identityKeyPair.pubKey, registrationId.toString()); // Convertendo registrationId para string
-
-  return { identityKeyPair, registrationId };
-}
-
-// Gerar o par de chaves de sessão
-async function generatePreKeyBundle(storage: SignalStorage, registrationId: number, identityKeyPair: libsignal.KeyPair) {
-  const signedPreKey = await libsignal.KeyHelper.generateSignedPreKey(identityKeyPair, 1);
-  const preKey = await libsignal.KeyHelper.generatePreKey(1);
-
-  const preKeyBundle = {
-    registrationId: registrationId,
-    identityKey: identityKeyPair.pubKey,
-    signedPreKey: signedPreKey.keyPair.pubKey,
-    signedPreKeySignature: signedPreKey.signature,
-    preKey: preKey.keyPair.pubKey
+// Middleware para lidar com promessas e erros
+function asyncHandler(fn: (req: Request, res: Response, next: NextFunction) => Promise<any>) {
+  return function (req: Request, res: Response, next: NextFunction) {
+    fn(req, res, next).catch(next);
   };
-
-  await storage.storePreKey(preKey.keyId, preKey.keyPair);
-  await storage.storeSignedPreKey(signedPreKey.keyId, signedPreKey.keyPair);
-
-  return preKeyBundle;
 }
 
-// Inicializar o protocolo de sessão entre dois usuários
-async function initSession(sender: libsignal.SignalProtocolAddress, receiver: libsignal.SignalProtocolAddress, senderStore: SignalStorage, receiverStore: SignalStorage, receiverPreKeyBundle: any) {
-  const sessionBuilder = new libsignal.SessionBuilder(senderStore, receiver);
-  await sessionBuilder.processPreKey(receiverPreKeyBundle);
-}
+// Rota para registro de usuário
+app.post(
+  '/register',
+  asyncHandler(async (req: Request, res: Response) => {
+    const { username } = req.body;
 
-// Enviar mensagem criptografada
-async function sendMessage(sender: libsignal.SignalProtocolAddress, receiver: libsignal.SignalProtocolAddress, senderStore: SignalStorage, message: string) {
-  const sessionCipher = new libsignal.SessionCipher(senderStore, receiver);
-  const ciphertext = await sessionCipher.encrypt(new TextEncoder().encode(message)); // Convertendo string para Uint8Array
-  return ciphertext;
-}
+    if (!username) {
+      return res.status(400).json({ error: 'Username is required' });
+    }
 
-// Receber e descriptografar mensagem
-async function receiveMessage(receiver: libsignal.SignalProtocolAddress, sender: libsignal.SignalProtocolAddress, receiverStore: SignalStorage, ciphertext: any) {
-  const sessionCipher = new libsignal.SessionCipher(receiverStore, sender);
-  const plaintext = await sessionCipher.decryptPreKeyWhisperMessage(ciphertext.body, 'binary');
-  
-  return new TextDecoder().decode(plaintext); // Convertendo Uint8Array de volta para string
-}
+    // Verifica se o usuário já existe
+    if (users[username]) {
+      return res.status(400).json({ error: 'Username already exists' });
+    }
 
-// Simulação de troca de mensagens
-async function messagingApp() {
-  // Armazenamento para Alice e Bob
-  const aliceStore = new SignalStorage();
-  const bobStore = new SignalStorage();
+    // Cria um novo usuário e armazena o serviço de Signal
+    const signalService = new SignalService();
+    users[username] = signalService;
 
-  // Gerar identidades para Alice e Bob
-  const { identityKeyPair: aliceIdentityKeyPair, registrationId: aliceRegistrationId } = await generateIdentity(aliceStore);
-  const { identityKeyPair: bobIdentityKeyPair, registrationId: bobRegistrationId } = await generateIdentity(bobStore);
+    return res.status(201).json({ message: 'User registered successfully' });
+  })
+);
 
-  // Gerar PreKeyBundle para Bob (enviado para Alice)
-  const bobPreKeyBundle = await generatePreKeyBundle(bobStore, bobRegistrationId, bobIdentityKeyPair);
+// Rota para envio de mensagens
+app.post(
+  '/sendMessage',
+  asyncHandler(async (req: Request, res: Response) => {
+    const { fromUser, toUser, message } = req.body;
 
-  // Criar endereços para Alice e Bob
-  const aliceAddress = new libsignal.SignalProtocolAddress('alice', aliceRegistrationId);
-  const bobAddress = new libsignal.SignalProtocolAddress('bob', bobRegistrationId);
+    if (!fromUser || !toUser || !message) {
+      return res.status(400).json({ error: 'fromUser, toUser, and message are required' });
+    }
 
-  // Alice inicia sessão com Bob usando o PreKeyBundle de Bob
-  await initSession(aliceAddress, bobAddress, aliceStore, bobStore, bobPreKeyBundle);
+    const fromService = users[fromUser];
+    const toService = users[toUser];
 
-  // Alice envia uma mensagem criptografada para Bob
-  const messageFromAlice = 'Olá, Bob! Como você está?';
-  const encryptedMessage = await sendMessage(aliceAddress, bobAddress, aliceStore, messageFromAlice);
+    if (!fromService || !toService) {
+      return res.status(404).json({ error: 'User not found' });
+    }
 
-  console.log('Mensagem criptografada de Alice para Bob:', encryptedMessage);
+    try {
+      // Envia a mensagem criptografada
+      await fromService.sendMessage(toUser, message);
+      return res.status(200).json({ message: 'Message sent successfully' });
+    } catch (error) {
+      console.log(error);
+      return res.status(500).json({ error: 'Failed to send message' });
+    }
+  })
+);
 
-  // Bob recebe e descriptografa a mensagem de Alice
-  const decryptedMessage = await receiveMessage(bobAddress, aliceAddress, bobStore, encryptedMessage);
-  console.log('Mensagem descriptografada recebida por Bob:', decryptedMessage);
-}
+// Rota para receber mensagens
+app.post(
+  '/receiveMessage',
+  asyncHandler(async (req: Request, res: Response) => {
+    const { fromUser, toUser, ciphertext } = req.body;
 
-messagingApp();
+    if (!fromUser || !toUser || !ciphertext) {
+      return res.status(400).json({ error: 'fromUser, toUser, and ciphertext are required' });
+    }
+
+    const toService = users[toUser];
+
+    if (!toService) {
+      return res.status(404).json({ error: 'Recipient user not found' });
+    }
+
+    try {
+      const message = await toService.receiveMessage(fromUser, ciphertext);
+      return res.status(200).json({ message });
+    } catch (error) {
+      return res.status(500).json({ error: 'Failed to receive message' });
+    }
+  })
+);
+
+// Iniciar o servidor
+app.listen(port, () => {
+  console.log(`Servidor rodando na porta ${port}`);
+});
