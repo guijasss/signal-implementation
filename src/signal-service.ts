@@ -9,17 +9,12 @@ import {
 import axios from 'axios';
   
 export class SignalService {
-  private store: SignalProtocolStore;
+  store: SignalProtocolStore;
 
   constructor() {
     this.store = new SignalProtocolStore();
   }
-
-  // Função auxiliar para converter CryptoKey para ArrayBuffer
-  private async cryptoKeyToArrayBuffer(key: CryptoKey): Promise<ArrayBuffer> {
-    return await crypto.subtle.exportKey('raw', key); // Exporta a chave em formato bruto (ArrayBuffer)
-  }
-
+  
   // Função auxiliar para converter string em ArrayBuffer
   private async stringToArrayBuffer(str: string): Promise<ArrayBuffer> {
     const encoder = new TextEncoder();
@@ -32,17 +27,12 @@ export class SignalService {
     return decoder.decode(buffer);
   }
 
-  // Registrar usuário e salvar a chave de identidade como ArrayBuffer
-  async registerUser(identityKeyPair: CryptoKeyPair, registrationId: number): Promise<void> {
-    const publicKey = await this.cryptoKeyToArrayBuffer(identityKeyPair.publicKey);
-    const privateKey = await this.cryptoKeyToArrayBuffer(identityKeyPair.privateKey);
-
-    // Salvar chave de identidade e registro no store
-    await this.store.put('identityKey', {
-      pubKey: publicKey,
-      privKey: privateKey,
+  registerUser(identityKeyPair: KeyPairType<ArrayBuffer>, registrationId: number): void {
+    this.store.put('identityKey', {
+      pubKey: identityKeyPair.pubKey,
+      privKey: identityKeyPair.privKey,
     });
-    await this.store.put('registrationId', registrationId);
+    this.store.put('registrationId', registrationId);
   }
   
   async generatePreKeys(startId: number, count: number): Promise<void> {
@@ -52,16 +42,12 @@ export class SignalService {
     }
   }
 
-  async generateSignedPreKey(identityKeyPair: CryptoKeyPair): Promise<void> {
-    const publicKey = await this.cryptoKeyToArrayBuffer(identityKeyPair.publicKey);
-    const privateKey = await this.cryptoKeyToArrayBuffer(identityKeyPair.privateKey);
-
+  async generateSignedPreKey(identityKeyPair: KeyPairType<ArrayBuffer>): Promise<void> {
     const identityKey: KeyPairType<ArrayBuffer> = {
-      pubKey: publicKey,
-      privKey: privateKey,
+      pubKey: identityKeyPair.pubKey,
+      privKey: identityKeyPair.privKey,
     };
 
-    // Gera uma signedPreKey usando o KeyHelper e armazena no Signal Store
     const signedPreKey = await KeyHelper.generateSignedPreKey(identityKey, Date.now());
     await this.store.storeSignedPreKey(signedPreKey.keyId, signedPreKey.keyPair);
   }
