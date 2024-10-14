@@ -1,14 +1,30 @@
 import express, { Request, Response, NextFunction } from 'express';
 import { SignalService } from './signal-service';
-import { SignalProtocolStore } from './signal-store'
 import bodyParser from 'body-parser';
 import { KeyHelper } from '@privacyresearch/libsignal-protocol-typescript';
 import axios from 'axios';
+import { initializeDatabase } from '../src/infra/typeorm/app-data-source';
+import { UserService } from '../src/services/user/user.service';
+import cors from 'cors';
+import { ChatService } from '../src/services/chat/chat.service';
+import { MessageService } from '../src/services/message/message.service';
+import { Server } from 'socket.io';
+import http from 'http';
+import { AuthService } from '../src/services/auth/auth.service';
 
 const app = express();
 const port = 3000;
+const server = http.createServer(app); // Criamos um servidor HTTP
+const io = new Server(server);
+const userService = new UserService();
+const chatService = new ChatService();
+const messageService = new MessageService();
+const authService = new AuthService();
 
 app.use(bodyParser.json());
+app.use(cors());
+initializeDatabase();
+
 
 // Armazenamento em memória
 const users: Record<string, SignalService> = {
@@ -25,9 +41,9 @@ function asyncHandler(fn: (req: Request, res: Response, next: NextFunction) => P
 
 // Rota para registro de usuário
 app.post(
-  '/register',
+  '/users',
   asyncHandler(async (req: Request, res: Response) => {
-    const { username } = req.body;
+    const { username, password, publicKey } = req.body;
 
     if (!username) {
       return res.status(400).json({ error: 'Username is required' });
@@ -36,6 +52,7 @@ app.post(
     if (users[username]) {
       return res.status(400).json({ error: 'Username already exists' });
     }
+    const user = await userService.addUser(username, password, publicKey);
 
     const signalService = new SignalService();
     users[username] = signalService;
@@ -46,9 +63,58 @@ app.post(
     await signalService.generatePreKeys(0, 100);
     await signalService.generateSignedPreKey(identityKeyPair);
 
-    return res.status(201).json({ message: 'User registered successfully' });
+    return res.status(201).json(user);
   })
 );
+
+app.get('/users', asyncHandler(async (req: Request, res: Response)=> {
+  const users = await userService.getAllUsers();
+  return res.status(200).json(users);
+}))
+
+app.post('/chats', asyncHandler(async (req: Request, res: Response) =>{
+  const { userOneId, userTwoId } = req.body;
+  const chat = await chatService.addchat(userOneId, userTwoId);
+  return res.status(201).json(chat);
+}))
+
+app.get('/chats/:id', asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params; // Pegando o ID da URL
+
+  try {
+    const chat = await chatService.getChatById(id);
+    
+    if (!chat) {
+      return res.status(404).json({ message: 'Chat not found' }); // Caso não encontre o chat
+    }
+
+    return res.status(200).json(chat); // Retorna o chat encontrado
+  } catch (error) {
+    return res.status(500).json({ message: 'Server error', error: error.message }); // Em caso de erro no servidor
+  }
+}));
+
+app.get('/chats')
+
+app.post(
+  '/auth',
+  asyncHandler(async (req: Request, res: Response) => {
+    const { username, password } = req.body;
+
+    if (!username) {
+      return res.status(400).json({ error: 'Username is required' });
+    }
+
+    if (!password) {
+      return res.status(400).json({ error: 'Password is required' });
+    }
+
+    const user = await authService.login(username, password);
+    
+    user ? res.status(200).json(user) : res.status(403).json({error: "Usuário não encontrado"});
+  })
+);
+
 
 app.get(
   '/getPreKeyBundle/:username',
@@ -159,6 +225,33 @@ app.post(
     }
   })
 );
+
+
+
+//WS:
+// WebSocket: Quando um cliente se conecta
+io.on('connection', async (socket) => {
+  console.log('Cliente conectado ao WebSocket', socket.id);
+
+  // Evento para entrar numa sala privada
+  socket.on('joinRoom', (chatId) => {
+      socket.join(chatId); // Usuário entra na sala
+      console.log(`Cliente ${socket.id} entrou na sala: ${chatId}`);
+  });
+
+  // Evento para envio de mensagem
+  socket.on('sendMessage', async ({ chatId, message, userSendId, userReceiveId }) => {
+      const result = await messageService.addMessage(userSendId,userReceiveId,chatId,message);
+      console.log(`Mensagem recebida na sala ${chatId}: ${message}`);
+      io.to(chatId).emit('receiveMessage', result); // Envia para todos na sala
+  });
+
+  // Quando o cliente se desconecta
+  socket.on('disconnect', () => {
+      console.log('Cliente desconectado', socket.id);
+  });
+});
+
 
 // Iniciar o servidor
 app.listen(port, () => {
