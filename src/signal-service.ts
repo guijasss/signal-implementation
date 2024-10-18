@@ -5,8 +5,9 @@ import {
     KeyHelper,
     KeyPairType,
   } from '@privacyresearch/libsignal-protocol-typescript';
-  import { SignalProtocolStore } from './signal-store'; // Importe a nova implementação do SignalStore
+import { SignalProtocolStore } from './signal-store';
 import axios from 'axios';
+import { base64ToArrayBuffer } from '../src/parsers';
   
 export class SignalService {
   store: SignalProtocolStore;
@@ -56,7 +57,20 @@ export class SignalService {
     const address = new SignalProtocolAddress(theirRegistrationId, 1);
     const sessionBuilder = new SessionBuilder(this.store, address);
 
-    await sessionBuilder.processPreKey(preKeyBundle);
+    const processedPreKeyBundle = {
+      identityKey: preKeyBundle.identityKey,
+      signedPreKey: {
+        keyId: preKeyBundle.signedPreKey.keyId,
+        publicKey: preKeyBundle.signedPreKey.publicKey,
+        signature: preKeyBundle.signedPreKey.signature,
+      },
+      preKey: {
+        keyId: preKeyBundle.preKey.keyId,
+        publicKey: preKeyBundle.preKey.publicKey,
+      },
+    };
+
+    await sessionBuilder.processPreKey(processedPreKeyBundle);
   }
 
   async sendMessage(recipientAddress: string, message: string): Promise<void> {
