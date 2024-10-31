@@ -4,10 +4,12 @@ import {
     SessionCipher,
     KeyHelper,
     KeyPairType,
-    PreKeyPairType
+    PreKeyPairType,
+    MessageType
   } from '@privacyresearch/libsignal-protocol-typescript';
 import { SignalProtocolStore } from './signal-store';
 import axios from 'axios';
+import { util } from 'protobufjs';
 
 interface Message {
   senderId: string;
@@ -29,18 +31,6 @@ export class SignalService {
     this.store = new SignalProtocolStore();
   }
   
-  // Função auxiliar para converter string em ArrayBuffer
-  private async stringToArrayBuffer(str: string): Promise<ArrayBuffer> {
-    const encoder = new TextEncoder();
-    return encoder.encode(str).buffer;  // Converte string para ArrayBuffer
-  }
-
-  // Função auxiliar para converter ArrayBuffer em string
-  private arrayBufferToString(buffer: ArrayBuffer): string {
-    const decoder = new TextDecoder();
-    return decoder.decode(buffer);
-  }
-  
   async generatePreKeys(startId: number, count: number): Promise<void> {
     for (let i = 0; i < count; i++) {
       const preKey = await KeyHelper.generatePreKey(startId + i);
@@ -48,60 +38,53 @@ export class SignalService {
     }
   }
 
-  async createSession(sessionId: string, store: SignalProtocolStore): Promise<void> {
-    const senderKeyPair: KeyPairType = await KeyHelper.generateIdentityKeyPair() 
-    const recipientKeyPair: KeyPairType = await KeyHelper.generateIdentityKeyPair(); 
-
-    const senderSessionRecord: SessionRecordType = {
-        identifier: sessionId, // O ID do destinatário
-        sessionKey: senderKeyPair.pubKey, // Chave pública do remetente
-        state: 'active', // Estado da sessão
-    };
-
-    const recipientSessionRecord: SessionRecordType = {
-        identifier: sessionId, // O ID do destinatário
-        sessionKey: recipientKeyPair.pubKey, // Chave pública do destinatário
-        state: 'active', // Estado da sessão
-    };
-
-    await store.storeSession(sessionId, JSON.stringify(senderSessionRecord)); // Armazena o registro de sessão no store
-    await store.storePreKey(1, senderKeyPair); // Armazenar a chave prévia do remetente
-    await store.storeSignedPreKey(1, senderKeyPair); // Armazenar a chave assinada do remetente
-
-    await store.storeSession(sessionId, JSON.stringify(recipientSessionRecord)); // Armazena o registro de sessão do destinatário
-    await store.storePreKey(2, recipientKeyPair); // Armazenar a chave prévia do destinatário
-    await store.storeSignedPreKey(2, recipientKeyPair); // Armazenar a chave assinada do destinatário
+  async isSessionEstablished(
+    senderId: string,
+    recipientId: string,
+    store: SignalProtocolStore
+  ): Promise<boolean> {
+    const sessionId = `${senderId}.${recipientId}`;
+    const session = await store.loadSession(sessionId);
+    
+    return session !== undefined;
   }
 
-
-  async setupSession(theirRegistrationId: string, preKeyBundle: any): Promise<void> {
-    const address = new SignalProtocolAddress(theirRegistrationId, 1);
-    const sessionBuilder = new SessionBuilder(this.store, address);
-
-    const processedPreKeyBundle = {
-      identityKey: preKeyBundle.identityKey,
-      signedPreKey: {
-        keyId: preKeyBundle.signedPreKey.keyId,
-        publicKey: preKeyBundle.signedPreKey.publicKey,
-        signature: preKeyBundle.signedPreKey.signature,
-      },
-      preKey: {
-        keyId: preKeyBundle.preKey.keyId,
-        publicKey: preKeyBundle.preKey.publicKey,
-      },
-    };
-
-    await sessionBuilder.processPreKey(processedPreKeyBundle);
-
-    const sessionKey = `session${theirRegistrationId}.1`;; 
-    const sessionRecord = address.toString(); // Obter o registro da sessão após o processamento
-
-    // Armazenar a sessão
-    if (sessionRecord) {
-        this.store.storeSession(sessionKey, sessionRecord); // Salvar a sessão no armazenamento
-    } else {
-        throw new Error('Failed to retrieve session record after processing prekey bundle');
+  async createSession(senderId: string, recipientId: string, store: SignalProtocolStore): Promise<void> {
+    const existingSessionIdentifier = `session.${senderId}-${recipientId}`;
+    
+    // Verifique se a sessão já existe
+    const existingSession = await store.loadSession(existingSessionIdentifier);
+    if (existingSession) {
+      console.log(`Session already exists for ${senderId} and ${recipientId}.`);
+      return; // Não cria uma nova sessão se já existir
     }
+  
+    // Gera e armazena as chaves do remetente
+    const senderKeyPair: KeyPairType = await KeyHelper.generateIdentityKeyPair();
+    await store.saveIdentity(senderId, senderKeyPair.pubKey);
+    
+    const senderPreKey = await KeyHelper.generatePreKey(1);
+    await store.storePreKey(senderPreKey.keyId, senderPreKey.keyPair);
+    await store.storeSignedPreKey(1, senderKeyPair);
+  
+    // Gera e armazena as chaves do destinatário
+    const recipientKeyPair: KeyPairType = await KeyHelper.generateIdentityKeyPair();
+    await store.saveIdentity(recipientId, recipientKeyPair.pubKey);
+    
+    const recipientPreKey = await KeyHelper.generatePreKey(2);
+    await store.storePreKey(recipientPreKey.keyId, recipientPreKey.keyPair);
+    await store.storeSignedPreKey(2, recipientKeyPair);
+    
+    // Cria uma nova sessão
+    const sessionRecord: SessionRecordType = {
+      identifier: existingSessionIdentifier, // Usar um identificador único para o par
+      sessionKey: senderKeyPair.pubKey, // Ou você pode escolher o chave do destinatário
+      state: 'active',
+    };
+    await store.storeSession(sessionRecord.identifier, JSON.stringify(sessionRecord));
+  
+    // Verifique as sessões ativas
+    console.log(await store.listActiveSessions());
   }
 
   async sendMessage(
@@ -110,35 +93,43 @@ export class SignalService {
     messageContent: string,
     store: SignalProtocolStore
   ): Promise<void> {
-    const sessionId: string = "session".concat(senderId, recipientId)
-
+    const sessionId: string = senderId.concat(".123");
+  
+    // Carrega a sessão
     const sessionRecord = await store.loadSession(sessionId);
     if (!sessionRecord) {
-      throw new Error(`No session found for ${recipientId}`);
+      console.log(await store.listActiveSessions());
+
+      throw new Error(`No session found for ${senderId}`);
     }
+    
+    const senderAddress = new SignalProtocolAddress(senderId, 123);
+    const sessionCipher = new SessionCipher(store, senderAddress);
 
-    // 2. Criptografar a mensagem
-    const encryptedMessage = await this.encryptMessage(messageContent);
-
-    // 3. Enviar a mensagem
-    await this.sendToRecipient(recipientId, encryptedMessage, senderId);
+    // Criptografa a mensagem
+    const encryptedMessage = await this.encryptMessage(sessionCipher, messageContent);
+  
+    // Enviar a mensagem
+    // await this.sendToRecipient(recipientId, encryptedMessage, senderId);
   }
 
-  async decryptMessage(encryptedMessage: ArrayBuffer): Promise<string> {
-    // Simulação de descriptografia: converte de volta para string
-    return new TextDecoder().decode(encryptedMessage);
-  }
+  async encryptMessage(sessionCipher: SessionCipher, content: string): Promise<MessageType> {
+    try {
+        const encoder = new TextEncoder();
+        const messageBuffer: ArrayBuffer = encoder.encode(content).buffer;
+   
+        const cipher = await sessionCipher.encrypt(messageBuffer);
 
-  async encryptMessage(content: string): Promise<ArrayBuffer> {
-    // Aqui você deve implementar a lógica de criptografia usando a biblioteca Signal
-    const encoder = new TextEncoder();
-    // Simulação de criptografia: converte para ArrayBuffer
-    return encoder.encode(content).buffer; 
-  }
+        return cipher;
+    } catch (error) {
+        console.error("Error during encryption", error);
+        throw error; // Lança o erro para tratamento adicional, se necessário
+    }
+}
 
   // Função para simular o envio da mensagem
-  async sendToRecipient(recipientId: string, message: ArrayBuffer, senderId: string): Promise<void> {
+  async sendToRecipient(recipientId: string, message: MessageType, senderId: string): Promise<void> {
     // Aqui você deve implementar a lógica de envio (ex: WebSocket ou HTTP)
-    console.log(`Mensagem enviada de ${senderId} para ${recipientId}:`, new TextDecoder().decode(message));
+    console.log(`Mensagem enviada de ${senderId} para ${recipientId}:`);
   }
 }
