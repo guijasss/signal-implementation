@@ -4,6 +4,7 @@ import {
   SessionRecordType,
   PreKeyPairType,
   SignedPreKeyPairType,
+  SignalProtocolAddress,
 } from '@privacyresearch/libsignal-protocol-typescript';
 
 // Definições de tipos auxiliares
@@ -56,6 +57,18 @@ export class SignalProtocolStore implements StorageType {
     this.put('identityKey' + encodedAddress, publicKey);
     return Promise.resolve(true);
   }
+
+  async getAllIdentities(): Promise<string[]> {
+    const identities: string[] = [];
+  
+    for (const key in this._store) {
+        if (key.startsWith('identityKey')) {
+            identities.push(key.replace('identityKey', '')); // Extrai o identificador
+        }
+    }
+  
+    return identities;
+}
 
   async loadSignedPreKey(keyId: number): Promise<KeyPairType | undefined> {
     return this.get('25519KeysignedKey' + keyId) as KeyPairType;
