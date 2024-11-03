@@ -3,7 +3,7 @@ import { SignalService } from './signal-service';
 import bodyParser from 'body-parser';
 import WebSocket from 'ws';
 import { SignalProtocolStore } from './signal-store';
-import axios from 'axios';
+import { isJson } from './helpers'
 
 const app = express();
 const port = 3000;
@@ -32,11 +32,33 @@ app.post(
       return res.status(400).json({ error: `User ${username} already exists!` });
     }
 
-    users[username] = { service: new SignalService(store) };
+    const userSignalService = new SignalService(store)
+    users[username] = { service: userSignalService };
 
-    return res.status(200).json({ message: `User ${username} was created!` });
+    const keys = await userSignalService.registerUser(username);
+
+    return res.status(200).json({
+      message: `User ${username} was created!`,
+      keys: keys
+    });
   })
 );
+
+app.post(
+  '/send',
+  asyncHandler(async (req: Request, res: Response) => {
+    const { from, to, message } = req.body;
+    const userSignalService = new SignalService(store)
+    users[from] = { service: userSignalService };
+    users[to] = { service: userSignalService };
+
+    const fromService = users[from]?.service;
+
+    await fromService.createSession(from, to);
+
+    await fromService.sendMessage(from, to, message)
+  })
+)
 
 // Endpoint para configurar a sessão
 app.post(
@@ -60,7 +82,6 @@ app.post(
 // Iniciar o servidor HTTP
 app.listen(port, () => {
   console.log(`Servidor rodando na porta ${port}`);
-  console.log(users);
 });
 
 // Criação do servidor WebSocket
@@ -69,21 +90,69 @@ const wss = new WebSocket.Server({ port: 8088 });
 wss.on('connection', (ws) => {
   console.log('Cliente conectado');
 
-  ws.on('message', (message: string) => {
+  ws.on('message', async (message: string) => {
     console.log(`Mensagem recebida: ${message}`);
 
-    if (message.toString().startsWith("/register")) {
-      const username = message.toString().split(" ")[1]
-      users[username] = { service: new SignalService(store) };
-      console.log(users);
+    message = message.toString()
+
+    if (message.startsWith("/register")) {
+      const username = message.split(" ")[1];
+      if (users[username]) {
+        ws.send(`User ${username} already exists!`);
+        return;
+      }
+
+      users[username] = { service: new SignalService(store), socket: ws };
+      ws.send(`User ${username} registered successfully!`);
+      return;
     }
 
-    // Envia a mensagem para todos os clientes conectados
-    wss.clients.forEach((client) => {
-      if (client !== ws && client.readyState === WebSocket.OPEN) {
-        client.send(message);
+    if (message.startsWith("/session")) {
+      const [_, sender, recipient] = message.split(" ");
+
+      const fromService = users[sender]?.service;
+      const toService = users[recipient]?.service;
+
+      if (!fromService || !toService) {
+        ws.send('One or both users not found');
+        return;
       }
-    });
+
+      await fromService.createSession(sender, recipient);
+      ws.send(`Session between ${sender} and ${recipient} created!`);
+      return;
+    }
+
+    if (isJson(message)) {
+      try {
+        const parsedMessage = JSON.parse(message);
+        const { sender, recipient, content } = parsedMessage;
+
+        const senderService = users[sender]?.service;
+        if (!senderService) {
+          ws.send('Sender not registered');
+          return;
+        }
+
+        // Criptografa a mensagem usando o protocolo Signal
+        const encryptedMessage = await senderService.encryptMessage(content, recipient);
+        console.log(`Mensagem criptografada: ${encryptedMessage}`);
+
+        // Envia a mensagem criptografada para o destinatário
+        wss.clients.forEach((client) => {
+          if (client !== ws && client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({
+              sender,
+              recipient,
+              encryptedMessage
+            }));
+          }
+        });
+      } catch (error) {
+        console.error('Erro ao criptografar a mensagem:', error);
+      }
+    }
+
   });
 
   ws.on('close', () => {
@@ -93,6 +162,7 @@ wss.on('connection', (ws) => {
 
 // Função para lidar com o envio de mensagens
 async function handleSendMessage(data: string, ws: WebSocket) {
-  console.log(data);
-  ws.send(JSON.stringify({message: data}))
+  console.log("AAA"+data);
 }
+
+//{"sender": "L", "recipient": "C", "content": "Hi!"}

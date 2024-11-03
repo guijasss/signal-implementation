@@ -53,11 +53,6 @@ export class SignalProtocolStore implements StorageType {
       : true;
   }
 
-  async saveIdentity(encodedAddress: string, publicKey: ArrayBuffer): Promise<boolean> {
-    this.put('identityKey' + encodedAddress, publicKey);
-    return Promise.resolve(true);
-  }
-
   async getAllIdentities(): Promise<string[]> {
     const identities: string[] = [];
   
@@ -68,18 +63,39 @@ export class SignalProtocolStore implements StorageType {
     }
   
     return identities;
-}
+  }
 
   async loadSignedPreKey(keyId: number): Promise<KeyPairType | undefined> {
     return this.get('25519KeysignedKey' + keyId) as KeyPairType;
   }
 
   async loadSession(identifier: string): Promise<SessionRecordType | undefined> {
-    return this.get(identifier) as string
+    return this.get(`session.${identifier}`) as SessionRecordType
   }
 
+  async saveIdentity(encodedAddress: string, publicKey: ArrayBuffer): Promise<boolean> {
+    this.put(`${encodedAddress}.1`, publicKey);
+    return Promise.resolve(true);
+  }
+
+  async loadIdentity(userId: string): Promise<StoreValue> {
+    const identityKeyString = this._store[`${userId}.1`];
+
+    if (!identityKeyString) {
+        console.log(`No identity key found for user ${userId}.`);
+        return null; // Retorna null se não houver chave armazenada
+    }
+
+    return identityKeyString;
+  }
+
+    // Método para armazenar a identidade, caso você ainda não tenha
+    // async saveIdentity(userId: string, identityKey: ArrayBuffer): Promise<void> {
+    //     this._store[`identity.${userId}`] = new Uint8Array(identityKey); // Armazena como Uint8Array
+    // }
+
   async storeSession(identifier: string, record: SessionRecordType): Promise<void> {
-    this.put(identifier, record); // Armazena diretamente o objeto SessionRecordType
+    this.put(`session.${identifier}`, record); // Armazena diretamente o objeto SessionRecordType
   }
 
   async getIdentityKeyPair(): Promise<KeyPairType | undefined> {
