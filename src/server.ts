@@ -4,6 +4,8 @@ import bodyParser from 'body-parser';
 import WebSocket from 'ws';
 import { SignalProtocolStore } from './signal-store';
 import { isJson } from './helpers'
+import { SignalDirectory } from './signal-directory';
+import { base64ToArrayBuffer } from './parsers';
 
 const app = express();
 const port = 3000;
@@ -11,6 +13,7 @@ const port = 3000;
 app.use(bodyParser.json());
 
 const store = new SignalProtocolStore() 
+const directory = new SignalDirectory()
 
 // Objeto para armazenar os usuários e seus serviços
 const users: Record<string, { service: SignalService; socket?: WebSocket }> = {};
@@ -32,10 +35,10 @@ app.post(
       return res.status(400).json({ error: `User ${username} already exists!` });
     }
 
-    const userSignalService = new SignalService(store)
+    const userSignalService = new SignalService(store, directory)
     users[username] = { service: userSignalService };
-
-    const keys = await userSignalService.registerUser(username);
+    
+    const keys = await userSignalService.register(username);
 
     return res.status(200).json({
       message: `User ${username} was created!`,
@@ -48,15 +51,15 @@ app.post(
   '/send',
   asyncHandler(async (req: Request, res: Response) => {
     const { from, to, message } = req.body;
-    const userSignalService = new SignalService(store)
-    users[from] = { service: userSignalService };
-    users[to] = { service: userSignalService };
+    const fromService = users[from].service;
+    
+    const encryptedMessage = await fromService.encryptMessage(to, message)
+    const decryptedMessage = await fromService.decryptMessage(to, encryptedMessage) 
 
-    const fromService = users[from]?.service;
-
-    await fromService.createSession(from, to);
-
-    await fromService.sendMessage(from, to, message)
+    return res.status(200).json({
+      message: decryptedMessage,
+      cipher: encryptedMessage
+    })
   })
 )
 
@@ -73,7 +76,7 @@ app.post(
       return res.status(404).json({ error: 'User not found' });
     }
 
-    await fromService.createSession(fromUser, toUser);
+    await fromService.setupSession(toUser);
   
     return res.status(200).json({ message: 'Session setup successfully' });
   })
@@ -102,7 +105,7 @@ wss.on('connection', (ws) => {
         return;
       }
 
-      users[username] = { service: new SignalService(store), socket: ws };
+      users[username] = { service: new SignalService(store, directory), socket: ws };
       ws.send(`User ${username} registered successfully!`);
       return;
     }
@@ -118,7 +121,7 @@ wss.on('connection', (ws) => {
         return;
       }
 
-      await fromService.createSession(sender, recipient);
+      await fromService.setupSession(recipient);
       ws.send(`Session between ${sender} and ${recipient} created!`);
       return;
     }
