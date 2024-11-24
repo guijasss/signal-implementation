@@ -24,24 +24,27 @@ interface IdentityKeyBundleResponse {
 
 export class SignalService {
   private store: SignalProtocolStore;
-  private directory: SignalDirectory
+  private directory: SignalDirectory;
 
-  constructor(store: SignalProtocolStore, directory: SignalDirectory) {
-    this.store = store;
+  constructor(directory: SignalDirectory) {
+    this.store = new SignalProtocolStore();
     this.directory = directory;
   }
 
+  getStore(): SignalProtocolStore {
+    return this.store
+  }
+
   async generatePreKeys(startId: number, count: number): Promise<void> {
-      for (let i = 0; i < count; i++) {
-          const preKey = await KeyHelper.generatePreKey(startId + i);
-          await this.store.storePreKey(preKey.keyId, preKey.keyPair);
-      }
+    for (let i = 0; i < count; i++) {
+      const preKey = await KeyHelper.generatePreKey(startId + i);
+      await this.store.storePreKey(preKey.keyId, preKey.keyPair);
+    }
   }
 
   async isSessionEstablished(senderId: string, recipientId: string): Promise<boolean> {
     const sessionId = `session.${senderId}-${recipientId}`;
     const session = await this.store.loadSession(sessionId);
-    
     return session !== undefined;
   }
 
@@ -67,7 +70,7 @@ export class SignalService {
           publicKey: preKey.keyPair.pubKey
         }
       ]
-    }
+    };
   }
 
   async register(username: string): Promise<IdentityKeyBundleResponse> {
@@ -75,7 +78,7 @@ export class SignalService {
     this.store.put('registrationId', registrationId);
 
     const identityKeyPair = await KeyHelper.generateIdentityKeyPair();
-    this.store.put('identityKey', identityKeyPair)
+    this.store.put('identityKey', identityKeyPair);
 
     const baseKeyId = Math.floor(10000 * Math.random());
     const preKey = await KeyHelper.generatePreKey(baseKeyId);
@@ -118,61 +121,37 @@ export class SignalService {
           publicKey: arrayBufferToBase64(preKey.keyPair.pubKey)
         }
       ]
-    }
+    };
   };
 
-  async setupSession(recipient: string): Promise<void> {
-    const recipientBundle = this.directory.getPreKeyBundle(recipient)
-    const recipientAddress = new SignalProtocolAddress(recipient, 1)
-    const sessionBuilder = new SessionBuilder(this.store, recipientAddress)
+  // Para enviar novas mensagens após a configuração da sessão
+  async sendMessage(recipientId: string, messageContent: string): Promise<MessageType> {
+    const recipientAddress = new SignalProtocolAddress(recipientId, 1);
+    const senderSessionCipher = new SessionCipher(this.store, recipientAddress);
 
-    await sessionBuilder.processPreKey(recipientBundle!)
-
-    const starterMessageBytes = Uint8Array.from([
-      0xce,
-      0x93,
-      0xce,
-      0xb5,
-      0xce,
-      0xb9,
-      0xce,
-      0xac,
-      0x20,
-      0xcf,
-      0x83,
-      0xce,
-      0xbf,
-      0xcf,
-      0x85,
-    ]);
-
-    const senderSessionCipher = new SessionCipher(this.store, recipientAddress)
-    const cipherText = await senderSessionCipher.encrypt(starterMessageBytes.buffer)
-
-    console.log(cipherText.body);
+    // Criptografar a mensagem
+    const cipherText = await senderSessionCipher.encrypt(
+      new TextEncoder().encode(messageContent).buffer
+    );
+    return cipherText;
   }
 
-  async encryptMessage(recipientId: string, messageContent: string): Promise<MessageType> {
-    const recipientAddress = new SignalProtocolAddress(recipientId, 1)
-    const senderSessionCipher = new SessionCipher(this.store, recipientAddress)
-    const cipherText = await senderSessionCipher.encrypt(new TextEncoder().encode(messageContent).buffer)
-    return cipherText
-  }
+  // Para receber mensagens
+  async receiveMessage(senderId: string, message: MessageType): Promise<string> {
+    const senderAddress = new SignalProtocolAddress(senderId, 1);
+    const sessionCipher = new SessionCipher(this.store, senderAddress);
 
-  async decryptMessage(recipientId: string, message: MessageType): Promise<string> {
-    const recipientAddress = new SignalProtocolAddress(recipientId, 1)
-    const cipher = new SessionCipher(this.store, recipientAddress)
     let plaintext: ArrayBuffer = new Uint8Array().buffer;
 
+    // Decryptando a mensagem com base no tipo
     if (message.type === 3) {
-      plaintext = await cipher.decryptPreKeyWhisperMessage(message.body!, "binary");
-    }
-    else if (message.type === 1) {
-      plaintext = await cipher.decryptWhisperMessage(message.body!, "binary");
+      plaintext = await sessionCipher.decryptPreKeyWhisperMessage(message.body!, "binary");
+    } else if (message.type === 1) {
+      plaintext = await sessionCipher.decryptWhisperMessage(message.body!, "binary");
     }
 
+    // Decodificando o texto plano
     const stringPlaintext = new TextDecoder().decode(new Uint8Array(plaintext));
-
-    return stringPlaintext
+    return stringPlaintext;
   }
 }
