@@ -61,9 +61,11 @@ app.post(
 
     // Enviar a mensagem
     const encryptedMessage = await fromService.sendMessage(to, message);
+    const decryptedMessage = await fromService.receiveMessage(from, encryptedMessage)
 
     return res.status(200).json({
-      cipher: encryptedMessage
+      cipher: encryptedMessage,
+      message: decryptedMessage
     });
   })
 );

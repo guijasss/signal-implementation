@@ -82,17 +82,20 @@ export class SignalService {
 
     const baseKeyId = Math.floor(10000 * Math.random());
     const preKey = await KeyHelper.generatePreKey(baseKeyId);
-    this.store.storePreKey(`${baseKeyId}`, preKey.keyPair);
+    await this.store.storePreKey(`${baseKeyId}`, preKey.keyPair);
 
     const signedPreKeyId = Math.floor(10000 * Math.random());
     const signedPreKey = await KeyHelper.generateSignedPreKey(
       identityKeyPair,
       signedPreKeyId
     );
-    this.store.storeSignedPreKey(signedPreKeyId, signedPreKey.keyPair);
-  
+
+    this.store.put("identityKey", identityKeyPair);
+    await this.store.storeSignedPreKey(signedPreKey.keyId, signedPreKey.keyPair);
+    await this.store.storePreKey(preKey.keyId, preKey.keyPair);
+
     const publicSignedPreKey: SignedPublicPreKeyType = {
-      keyId: signedPreKeyId,
+      keyId: signedPreKey.keyId,
       publicKey: signedPreKey.keyPair.pubKey,
       signature: signedPreKey.signature,
     };
@@ -139,6 +142,9 @@ export class SignalService {
   // Para receber mensagens
   async receiveMessage(senderId: string, message: MessageType): Promise<string> {
     const senderAddress = new SignalProtocolAddress(senderId, 1);
+
+    console.log(this.store);
+
     const sessionCipher = new SessionCipher(this.store, senderAddress);
 
     let plaintext: ArrayBuffer = new Uint8Array().buffer;
@@ -149,6 +155,9 @@ export class SignalService {
     } else if (message.type === 1) {
       plaintext = await sessionCipher.decryptWhisperMessage(message.body!, "binary");
     }
+
+    console.log(plaintext);
+    
 
     // Decodificando o texto plano
     const stringPlaintext = new TextDecoder().decode(new Uint8Array(plaintext));
